@@ -83,19 +83,89 @@ readonly private?: boolean | null
 
 `githubOptions.private`は、electron-builderの設定ファイルで設定します。以下の場所で設定可能です：
 
+### 設定ファイルの探索順序と配置場所
+
+electron-builderは以下の順序で設定ファイルを探索・読み込みます：
+
+#### 1. 設定ファイルの探索場所
+
+**プロジェクトディレクトリ**は以下の方法で決定されます：
+- `--projectDir` オプションで指定
+- 未指定の場合、現在の作業ディレクトリ（`process.cwd()`）を使用
+
+**設定ファイルの探索は以下の順序で行われます：**
+
+1. **コマンドライン引数**: `--config <path>` で指定されたファイル
+2. **プロジェクトディレクトリ内の設定ファイル**（以下の順序）:
+   - `electron-builder.yml`
+   - `electron-builder.yaml`
+   - `electron-builder.json`
+   - `electron-builder.json5`
+   - `electron-builder.js`
+   - `electron-builder.cjs`
+   - `electron-builder.mjs`
+   - `electron-builder.ts`
+   - `electron-builder.toml`
+3. **package.json内の`build`フィールド**
+
+#### 2. 設定ファイルの対応形式
+
+```typescript
+// packages/app-builder-lib/src/util/config/load.ts で実装
+```
+
+- **JSON/JSON5**: `.json`, `.json5`
+- **YAML**: `.yml`, `.yaml`
+- **JavaScript**: `.js`, `.cjs`, `.mjs` (CommonJS/ESM対応)
+- **TypeScript**: `.ts` (config-file-tsを使用)
+- **TOML**: `.toml` (tomlパッケージが必要)
+
+#### 3. プロジェクト構造による設定ファイルの配置
+
+**標準的な構造**:
+```
+my-electron-app/
+├── package.json           # "build"フィールドまたは
+├── electron-builder.yml   # 専用設定ファイル
+├── src/
+│   └── main.js
+└── dist/
+```
+
+**2つのpackage.json構造**:
+```
+my-electron-app/
+├── package.json           # 開発用依存関係
+├── electron-builder.yml   # ビルド設定
+├── app/
+│   ├── package.json       # アプリケーション依存関係
+│   └── main.js
+└── dist/
+```
+
+**重要**: 設定ファイルは常に**プロジェクトルート**に配置し、アプリケーションディレクトリ内には配置しないでください。
+
 ### 設定ファイルでの指定方法
 
 #### package.jsonでの設定
 
 ```json
 {
+  "name": "my-electron-app",
+  "version": "1.0.0",
+  "main": "src/main.js",
   "build": {
+    "appId": "com.example.myapp",
     "publish": {
       "provider": "github",
       "owner": "your-username",
       "repo": "your-repo",
       "private": true
     }
+  },
+  "devDependencies": {
+    "electron": "^latest",
+    "electron-builder": "^latest"
   }
 }
 ```
@@ -103,6 +173,7 @@ readonly private?: boolean | null
 #### electron-builder.ymlでの設定
 
 ```yaml
+appId: com.example.myapp
 publish:
   provider: github
   owner: your-username
@@ -110,8 +181,43 @@ publish:
   private: true
 ```
 
+#### electron-builder.jsでの設定（ESM対応）
+
+```javascript
+// electron-builder.js
+export default {
+  appId: 'com.example.myapp',
+  publish: {
+    provider: 'github',
+    owner: 'your-username',
+    repo: 'your-repo',
+    private: true
+  }
+}
+```
+
+#### electron-builder.tsでの設定
+
+```typescript
+// electron-builder.ts
+import { Configuration } from 'electron-builder';
+
+const config: Configuration = {
+  appId: 'com.example.myapp',
+  publish: {
+    provider: 'github',
+    owner: 'your-username',
+    repo: 'your-repo',
+    private: true
+  }
+};
+
+export default config;
+```
+
 #### 複数のpublishプロバイダーを設定する場合
 
+**JSON設定例**:
 ```json
 {
   "build": {
@@ -124,12 +230,141 @@ publish:
       },
       {
         "provider": "s3",
-        "bucket": "my-bucket"
+        "bucket": "my-bucket",
+        "region": "us-east-1"
       }
     ]
   }
 }
 ```
+
+**YAML設定例**:
+```yaml
+publish:
+  - provider: github
+    owner: your-username
+    repo: your-repo
+    private: true
+  - provider: s3
+    bucket: my-bucket
+    region: us-east-1
+```
+
+### 複数プロバイダーの優先順位と動作
+
+#### 1. 自動更新での優先順位
+
+**重要**: `electron-updater`の自動更新機能は、**配列の最初のプロバイダーのみ**を使用します。
+
+```typescript
+// packages/builder-util-runtime/src/publishOptions.ts:28-35
+/**
+ * Whether to publish auto update info files.
+ *
+ * Auto update relies only on the first provider in the list (you can specify several publishers).
+ * Thus, probably, there`s no need to upload the metadata files for the other configured providers. But by default will be uploaded.
+ *
+ * @default true
+ */
+readonly publishAutoUpdate?: boolean
+```
+
+#### 2. 公式仕様
+
+electron-builderの公式ドキュメントでは以下のように明記されています：
+
+> "Auto update relies only on the first provider in the list (you can specify several publishers)."
+
+#### 3. 実例での動作説明
+
+以下の設定例での動作：
+
+```json
+{
+  "build": {
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "your-username",
+        "repo": "your-repo",
+        "private": true
+      },
+      {
+        "provider": "s3",
+        "bucket": "backup-bucket"
+      }
+    ]
+  }
+}
+```
+
+**動作結果**:
+- **アーティファクト配布**: 両方のプロバイダーにアップロード
+- **自動更新情報**: **GitHubのみ**が使用される
+- **`latest.yml`の生成**: 両方のプロバイダーに対して生成（デフォルト）
+
+#### 4. `publishAutoUpdate`による制御
+
+特定のプロバイダーで自動更新情報の生成を無効化：
+
+```json
+{
+  "build": {
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "your-username",
+        "repo": "your-repo",
+        "private": true
+      },
+      {
+        "provider": "s3",
+        "bucket": "backup-bucket",
+        "publishAutoUpdate": false
+      }
+    ]
+  }
+}
+```
+
+この設定では：
+- S3には`latest.yml`が生成されない
+- GitHubには`latest.yml`が生成される
+- 自動更新はGitHubのみを使用
+
+#### 5. 実行時の優先順位決定
+
+electron-builderは以下の順序で実際に使用するプロバイダーを決定します：
+
+```typescript
+// packages/app-builder-lib/src/publish/PublishManager.ts:431-468
+async function resolvePublishConfigurations() {
+  // 1. 明示的な設定がある場合はそれを使用
+  if (publishers != null) {
+    return publishers
+  }
+  
+  // 2. 環境変数による自動検出
+  if (process.env.GH_TOKEN || process.env.GITHUB_TOKEN) {
+    return [{ provider: "github" }]
+  }
+  if (process.env.KEYGEN_TOKEN) {
+    return [{ provider: "keygen" }]
+  }
+  if (process.env.BITBUCKET_TOKEN) {
+    return [{ provider: "bitbucket" }]
+  }
+  
+  // 3. デフォルト（空配列）
+  return []
+}
+```
+
+### 設定の優先順位まとめ
+
+1. **設定ファイルの優先順位**: CLI引数 > 専用設定ファイル > package.json
+2. **プロバイダーの優先順位**: 配列の最初が自動更新に使用
+3. **自動検出の優先順位**: 明示設定 > 環境変数 > デフォルト
 
 ### privateフィールドの定義
 
